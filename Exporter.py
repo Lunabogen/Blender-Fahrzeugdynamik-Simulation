@@ -230,7 +230,7 @@ def get_obj(object_name):
     obj = bpy.data.objects.get(object_name)
 
     if obj is None:
-        raise Exception("Objekt nicht gefunden: " + object_name)
+        raise ValueError("Objekt nicht gefunden: " + object_name)
 
     return obj
 
@@ -259,7 +259,7 @@ def raycast_fahrbahn_world(
     world_to_fahrbahn_mat = fahrbahn_eval.matrix_world.inverted()
 
     if ray_dir_world_vec.length == 0.0:
-        raise Exception("Raycast-Richtung darf kein Nullvektor sein.")
+        raise ValueError("Raycast-Richtung darf kein Nullvektor sein.")
 
     ray_dir_world_vec = ray_dir_world_vec.normalized()
 
@@ -283,7 +283,7 @@ def raycast_fahrbahn_world(
     ray_distance_fahrbahn = ray_vec_fahrbahn.length
 
     if ray_distance_fahrbahn == 0.0:
-        raise Exception(
+        raise ValueError(
             "Raycast-Laenge im Fahrbahn-Koordinatensystem ist null."
         )
 
@@ -318,243 +318,276 @@ def raycast_fahrbahn_world(
     )
 
 
-# ============================================================
-# 2. Remove old Raycast handlers
-# ============================================================
+OLD_RAYCAST_HANDLER_NAMES = {
+    "raycast_federweg_handler",
+    "raycast_federweg_v2_handler",
+    "raycast_federweg_v3_handler",
+}
 
-def remove_old_raycast_handlers():
-    old_handler_names = [
-        "raycast_federweg_handler",
-        "raycast_federweg_v2_handler",
-        "raycast_federweg_v3_handler",
+
+def validate_required_objects():
+    required_names = [
+        CAR_OBJECT_NAME,
+        FAHRBAHN_OBJECT_NAME,
+        *RAD_OBJECT_NAMES.values(),
+    ]
+    missing_names = [
+        name for name in required_names
+        if bpy.data.objects.get(name) is None
     ]
 
-    removed_count = 0
+    if missing_names:
+        raise ValueError(
+            "Pflichtobjekte fehlen: " + ", ".join(missing_names)
+        )
 
-    for handler in list(bpy.app.handlers.frame_change_post):
-        handler_name = getattr(handler, "__name__", "")
-
-        if handler_name in old_handler_names:
-            bpy.app.handlers.frame_change_post.remove(handler)
-            removed_count += 1
-            print("Removed old handler:", handler_name)
-
-    if removed_count == 0:
-        print("Keine alten Raycast-Federweg-Handler gefunden.")
-    else:
-        print("Removed old handler count:", removed_count)
-
-
-# ============================================================
-# 3. Test Basic setup test
-# ============================================================
-
-def test_basic_setup():
-    print("============================================================")
-    print("Road Input Exporter - Basic Setup Check")
-    print("============================================================")
-
-    remove_old_raycast_handlers()
-
-    car_obj = get_obj(CAR_OBJECT_NAME)
     fahrbahn_obj = get_obj(FAHRBAHN_OBJECT_NAME)
-
-    print("car_obj gefunden:", car_obj.name)
-    print("fahrbahn_obj gefunden:", fahrbahn_obj.name)
-
     if fahrbahn_obj.type != "MESH":
-        raise Exception(
-            "Fahrbahn_Kollider muss ein Mesh sein. Aktueller Typ: "
-            + fahrbahn_obj.type
+        raise ValueError(
+            f"{FAHRBAHN_OBJECT_NAME} muss ein Mesh sein. "
+            f"Aktueller Typ: {fahrbahn_obj.type}"
         )
 
-    for rad_key, rad_object_name in RAD_OBJECT_NAMES.items():
-        rad_obj = get_obj(rad_object_name)
-        print("rad_obj gefunden:", rad_key, "=", rad_obj.name)
 
-    print("============================================================")
-    print("FERTIG: Basic Setup funktioniert.")
-    print("============================================================")
+def validate_scene_output_and_parameters(context):
+    scene = context.scene
 
+    if scene.frame_end < scene.frame_start:
+        raise ValueError("Ungueltiger Frame-Bereich.")
 
-# ============================================================
-# 4. Test current frame car state
-# ============================================================
+    if scene.render.fps_base == 0.0:
+        raise ValueError("FPS Base darf nicht 0 sein.")
 
-def print_vec(vec_name, vec_value):
-    print(
-        vec_name + ":",
-        "x =", round(vec_value.x, 4),
-        "y =", round(vec_value.y, 4),
-        "z =", round(vec_value.z, 4),
-    )
+    fps = scene.render.fps / scene.render.fps_base
+    if not math.isfinite(fps) or fps <= 0.0:
+        raise ValueError("FPS muss groesser als 0 sein.")
 
-
-def test_car_state_current_frame():
-    print("============================================================")
-    print("Road Input Exporter - Car State current Frame Check")
-    print("============================================================")
-
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-
-    car_obj = get_obj(CAR_OBJECT_NAME)
-    fahrbahn_obj = get_obj(FAHRBAHN_OBJECT_NAME)
-
-    car_eval = car_obj.evaluated_get(depsgraph)
-    fahrbahn_eval = fahrbahn_obj.evaluated_get(depsgraph)
-
-    car_local_to_world_mat = car_eval.matrix_world.copy()
-    car_world_to_local_mat = car_local_to_world_mat.inverted()
-
-    car_pos_world_vec = car_local_to_world_mat.translation
-
-    car_forward_world_vec = (
-        car_local_to_world_mat.to_3x3() @ Vector((0.0, 1.0, 0.0))
-    ).normalized()
-
-    car_right_world_vec = (
-        car_local_to_world_mat.to_3x3() @ Vector((1.0, 0.0, 0.0))
-    ).normalized()
-
-    car_up_world_vec = (
-        car_local_to_world_mat.to_3x3() @ Vector((0.0, 0.0, 1.0))
-    ).normalized()
-
-    car_yaw_rad = math.atan2(
-        car_forward_world_vec.x,
-        car_forward_world_vec.y,
-    )
-
-    print("Aktueller Frame:", bpy.context.scene.frame_current)
-    print("car_eval:", car_eval.name)
-    print("fahrbahn_eval:", fahrbahn_eval.name)
-
-    print_vec("car_pos_world_vec", car_pos_world_vec)
-    print_vec("car_forward_world_vec", car_forward_world_vec)
-    print_vec("car_right_world_vec", car_right_world_vec)
-    print_vec("car_up_world_vec", car_up_world_vec)
-
-    print("car_yaw_rad:", round(car_yaw_rad, 4))
-
-    print("============================================================")
-    print("FERTIG: Current Frame Check funktioniert.")
-    print("============================================================")
-
-
-# ============================================================
-# 5. Test current frame Rad center positions
-# ============================================================
-
-def test_rad_center_positions_current_frame():
-    print("============================================================")
-    print("Road Input Exporter - Rad Center Position Check")
-    print("============================================================")
-
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-
-    car_obj = get_obj(CAR_OBJECT_NAME)
-    car_eval = car_obj.evaluated_get(depsgraph)
-
-    car_local_to_world_mat = car_eval.matrix_world.copy()
-    car_world_to_local_mat = car_local_to_world_mat.inverted()
-
-    for rad_key, rad_object_name in RAD_OBJECT_NAMES.items():
-        rad_obj = get_obj(rad_object_name)
-        rad_eval = rad_obj.evaluated_get(depsgraph)
-
-        rad_center_pos_world_vec = rad_eval.matrix_world.translation
-        rad_center_pos_local_vec = car_world_to_local_mat @ rad_center_pos_world_vec
-
-        print("------------------------------------------------------------")
-        print("Rad:", rad_key, "=", rad_obj.name)
-        print_vec("rad_center_pos_world_vec", rad_center_pos_world_vec)
-        print_vec("rad_center_pos_local_vec", rad_center_pos_local_vec)
-
-    print("============================================================")
-    print("FERTIG: Rad Center Position Check funktioniert.")
-    print("============================================================")
-
-
-# ============================================================
-# 6. Test all Rad center Raycast current frame
-# ============================================================
-
-def test_raycast_all_rad_center_current_frame():
-    print("============================================================")
-    print("Road Input Exporter - All Rad Center Raycast Test")
-    print("============================================================")
-
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-
-    car_obj = get_obj(CAR_OBJECT_NAME)
-    fahrbahn_obj = get_obj(FAHRBAHN_OBJECT_NAME)
-
-    car_eval = car_obj.evaluated_get(depsgraph)
-    fahrbahn_eval = fahrbahn_obj.evaluated_get(depsgraph)
-
-    car_local_to_world_mat = car_eval.matrix_world.copy()
-    car_world_to_local_mat = car_local_to_world_mat.inverted()
-
-    car_up_world_vec = (
-        car_local_to_world_mat.to_3x3() @ Vector((0.0, 0.0, 1.0))
-    ).normalized()
-
-    for rad_key, rad_object_name in RAD_OBJECT_NAMES.items():
-        rad_obj = get_obj(rad_object_name)
-        rad_eval = rad_obj.evaluated_get(depsgraph)
-
-        rad_center_pos_world_vec = rad_eval.matrix_world.translation.copy()
-        rad_center_pos_local_vec = car_world_to_local_mat @ rad_center_pos_world_vec
-
-        rad_center_ray_start_world_vec = (
-            rad_center_pos_world_vec
-            + car_up_world_vec * RAY_START_OFFSET_M
+    if bpy.data.filepath == "":
+        raise ValueError(
+            "Die .blend-Datei ist noch nicht gespeichert."
         )
 
-        rad_center_ray_dir_world_vec = -car_up_world_vec
-
-        (
-            rad_center_hit_bool,
-            rad_center_hit_world_vec,
-            rad_center_hit_normal_world_vec,
-            rad_center_hit_face_index,
-        ) = raycast_fahrbahn_world(
-            fahrbahn_eval,
-            rad_center_ray_start_world_vec,
-            rad_center_ray_dir_world_vec,
-            RAY_DISTANCE_M,
+    output_directory = Path(bpy.path.abspath("//"))
+    if not output_directory.is_dir():
+        raise ValueError(
+            "Ausgabeordner ist ungueltig: "
+            + str(output_directory)
         )
 
-        print("------------------------------------------------------------")
-        print("Rad:", rad_key, "=", rad_obj.name)
+    parameter_data = build_vehicle_parameter_dict(context)
+    positive_keys = [
+        "FAHRZEUGMASSE_KG",
+        "UNGEFEDERTEMASSE_PRO_RAD_KG",
+        "FEDERSTEIFIGKEIT_N_PRO_M",
+        "DAEMPFERKONSTANTE_N_S_PRO_M",
+        "REIFENSTEIFIGKEIT_N_PRO_M",
+        "MAX_EINFEDERUNG_M",
+        "MAX_AUSFEDERUNG_M",
+        "SCHWERPUNKT_HOEHE_M",
+    ]
+    invalid_keys = [
+        key for key in positive_keys
+        if (
+            not math.isfinite(float(parameter_data[key]))
+            or parameter_data[key] <= 0.0
+        )
+    ]
 
-        print_vec("rad_center_pos_world_vec", rad_center_pos_world_vec)
-        print_vec("rad_center_pos_local_vec", rad_center_pos_local_vec)
+    if invalid_keys:
+        raise ValueError(
+            "Ungueltige Fahrzeugparameter: "
+            + ", ".join(invalid_keys)
+        )
 
-        print("rad_center_hit_bool:", rad_center_hit_bool)
+    sprung_mass_ratio = parameter_data["GEFEDERTE_MASSE_ANTEIL"]
+    if not 0.0 < sprung_mass_ratio < 1.0:
+        raise ValueError(
+            "GEFEDERTE_MASSE_ANTEIL muss zwischen 0 und 1 liegen."
+        )
 
-        if rad_center_hit_bool:
-            rad_center_hit_local_vec = (
-                car_world_to_local_mat @ rad_center_hit_world_vec
+
+def get_active_old_raycast_handler_names():
+    return sorted({
+        getattr(handler, "__name__", "")
+        for handler in bpy.app.handlers.frame_change_post
+        if getattr(handler, "__name__", "")
+        in OLD_RAYCAST_HANDLER_NAMES
+    })
+
+
+def validate_current_frame_raycast():
+    scene = bpy.context.scene
+    original_frame = scene.frame_current
+    warnings = []
+
+    try:
+        static_data = read_static_vehicle_geometry(original_frame)
+
+        positive_geometry_keys = [
+            "car_spurweite_front_m",
+            "car_spurweite_rear_m",
+            "car_radstand_left_m",
+            "car_radstand_right_m",
+        ]
+        invalid_geometry = [
+            f"{key}={static_data[key]}"
+            for key in positive_geometry_keys
+            if (
+                not math.isfinite(float(static_data[key]))
+                or static_data[key] <= 0.0
+            )
+        ]
+        if invalid_geometry:
+            raise ValueError(
+                "Ungueltige Fahrzeuggeometrie: "
+                + ", ".join(invalid_geometry)
             )
 
-            rad_center_fahrbahn_z_local_m = rad_center_hit_local_vec.z
+        invalid_radii = []
+        for rad_key in RAD_OBJECT_NAMES:
+            radius = static_data[
+                "rad_radius_used_" + rad_key + "_m"
+            ]
+            if (
+                radius is None
+                or not math.isfinite(float(radius))
+                or not (
+                    RAD_RADIUS_MIN_PLAUSIBLE_M
+                    <= radius
+                    <= RAD_RADIUS_MAX_PLAUSIBLE_M
+                )
+            ):
+                invalid_radii.append(
+                    rad_key + "=" + str(radius)
+                )
 
-            print_vec("rad_center_hit_world_vec", rad_center_hit_world_vec)
-            print_vec("rad_center_hit_local_vec", rad_center_hit_local_vec)
+        if invalid_radii:
+            raise ValueError(
+                "Unplausible Rad-Radien: "
+                + ", ".join(invalid_radii)
+            )
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        car_eval = get_obj(CAR_OBJECT_NAME).evaluated_get(depsgraph)
+        fahrbahn_eval = get_obj(
+            FAHRBAHN_OBJECT_NAME
+        ).evaluated_get(depsgraph)
+
+        center_data = read_rad_center_fahrbahn_current_frame(
+            car_eval, fahrbahn_eval, depsgraph
+        )
+        envelope_data = read_rad_envelope_fahrbahn_current_frame(
+            car_eval,
+            fahrbahn_eval,
+            depsgraph,
+            static_data,
+        )
+
+        raycast_errors = []
+        expected_hits = len(RAD_ENVELOPE_OFFSET_RATIO_LIST)
+
+        for rad_key in RAD_OBJECT_NAMES:
+            center_hit = center_data[rad_key][
+                "rad_center_hit_bool"
+            ]
+            envelope_hits = envelope_data[rad_key][
+                "rad_envelope_hit_count"
+            ]
+            required_z = envelope_data[rad_key][
+                "rad_envelope_required_max_z_local_m"
+            ]
+
+            if not center_hit:
+                raycast_errors.append(
+                    "Center-Raycast " + rad_key + " ohne Hit"
+                )
+
+            if envelope_hits <= 0 or required_z is None:
+                raycast_errors.append(
+                    "Multi-Raycast " + rad_key + " ohne Hit"
+                )
+            elif envelope_hits < expected_hits:
+                warnings.append(
+                    f"Multi-Raycast {rad_key}: "
+                    f"nur {envelope_hits}/{expected_hits} Hits."
+                )
 
             print(
-                "rad_center_fahrbahn_z_local_m:",
-                round(rad_center_fahrbahn_z_local_m, 4),
+                f"Rad {rad_key} | center_hit={center_hit} | "
+                f"envelope_hits={envelope_hits} | "
+                f"required_z_local_m={required_z}"
             )
 
-            print("rad_center_hit_face_index:", rad_center_hit_face_index)
-        else:
-            print("WARNUNG: Kein Raycast-Hit fuer Rad:", rad_key)
+        if raycast_errors:
+            raise ValueError("; ".join(raycast_errors))
+
+    finally:
+        if scene.frame_current != original_frame:
+            scene.frame_set(original_frame)
+
+    return warnings
+
+
+def validate_export_setup(context):
+    passed_checks = []
+    warnings = []
+    errors = []
+
+    checks = [
+        ("Pflichtobjekte", validate_required_objects),
+        (
+            "Szene, Ausgabe und Parameter",
+            lambda: validate_scene_output_and_parameters(context),
+        ),
+        ("Geometrie und Raycast", validate_current_frame_raycast),
+    ]
+
+    for check_name, check_function in checks:
+        try:
+            check_warnings = check_function()
+            passed_checks.append(check_name)
+            if check_warnings:
+                warnings.extend(check_warnings)
+        except Exception as error:
+            errors.append(check_name + ": " + str(error))
+
+    old_handler_names = get_active_old_raycast_handler_names()
+    if old_handler_names:
+        warnings.append(
+            "Alte Raycast-Federweg-Handler aktiv: "
+            + ", ".join(old_handler_names)
+            + ". Sie wurden nicht entfernt."
+        )
+    else:
+        passed_checks.append("Raycast-Handler")
 
     print("============================================================")
-    print("FERTIG: All Rad Center Raycast Test funktioniert.")
+    print("Road Input Exporter - Validate Setup")
     print("============================================================")
+
+    for message in passed_checks:
+        print("[OK]", message)
+    for message in warnings:
+        print("[WARNUNG]", message)
+    for message in errors:
+        print("[FEHLER]", message)
+
+    print(
+        f"Ergebnis: {len(passed_checks)} bestanden, "
+        f"{len(warnings)} Warnungen, {len(errors)} Fehler."
+    )
+    print("============================================================")
+
+    if errors:
+        raise ValueError(
+            "Setup-Validierung fehlgeschlagen:\n- "
+            + "\n- ".join(errors)
+        )
+
+    return {
+        "passed_count": len(passed_checks),
+        "warnings": warnings,
+    }
 
 
 # ============================================================
