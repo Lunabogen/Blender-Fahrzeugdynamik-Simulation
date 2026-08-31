@@ -1,18 +1,186 @@
-# Vehicle Dynamics Toolchain for Blender
+# ============================================================
+# ============================================================
+
+# Road Input Exporter v1
+
+# Export der Fahrtrajektorie und Strassenanregung aus Blender
+
+# ============================================================
+
 #
-# Datenfluss:
-#   Blender-Szene
-#     -> road_input.csv + vehicle_parameter.json
-#     -> Viertelfahrzeug-Solver
-#     -> vehicle_response.csv
-#     -> Keyframes fuer Karosserie und Radfederung
+
+# Dieses Skript liest die vorhandene Blender-Animation aus und
+
+# exportiert pro Frame strukturierte Simulationsdaten als CSV.
+# Die Parameter werden als JSON exportiert.
+
 #
-# Das lokale Referenzsystem ist immer Fahrzeug_Pfadsteuerung-local.
-# Der Exporter wertet die Szene nur frameweise aus und stellt danach
-# den urspruenglichen Frame wieder her. Erst der Baker schreibt Keyframes.
+
+# Referenzsystem:
+
+# - "local" bedeutet in diesem Skript immer:
+
+# Fahrzeug_Pfadsteuerung local.
+
 #
-# Nach Aenderungen an Fahrspur, Fahrbahn oder Animation muessen die
-# Eingabedateien erneut exportiert und die Pipeline erneut ausgefuehrt werden.
+
+# Systemaufteilung:
+
+# - Fahrzeug_Pfadsteuerung:
+
+# Input-Ebene / Fahrtrajektorie / Spur / Timing.
+
+#
+
+# - Fahrzeug_Hauptsteuerung:
+
+# Output-Ebene / spaeteres Bake-Ziel.
+
+#
+
+# - Karosserie_Steuerung:
+
+# visuelle Fahrzeugbewegung, z.B. Hub, Nicken, Rollen.
+
+#
+
+# Dieses Skript verwendet ausschliesslich Fahrzeug_Pfadsteuerung
+
+# als Referenz fuer die exportierten lokalen Groessen.
+
+#
+
+# Exportierte Groessen:
+
+#
+
+# 1. Zeitbasis:
+
+# frame
+
+# t_s
+
+# dt_s
+
+#
+
+# 2. Fahrtrajektorie:
+
+# car_pos_x_world_m
+
+# car_pos_y_world_m
+
+# car_pos_z_world_m
+
+# car_yaw_rad
+
+# car_yaw_unwrapped_rad
+
+#
+
+# 3. Fahrzeug-Kinematik:
+
+# car_vel_x_world_mps
+
+# car_vel_y_world_mps
+
+# car_vel_z_world_mps
+
+# car_vel_abs_mps
+
+#
+
+# car_vel_forward_local_mps
+
+# car_vel_lateral_local_mps
+
+# car_vel_vertical_local_mps
+
+#
+
+# car_acc_x_world_mps2
+
+# car_acc_y_world_mps2
+
+# car_acc_z_world_mps2
+
+#
+
+# car_acc_forward_local_mps2
+
+# car_acc_lateral_local_mps2
+
+# car_acc_vertical_local_mps2
+
+#
+
+# car_yaw_rate_radps
+
+# car_yaw_acc_radps2
+
+#
+
+# 4. Rad-center Road Input:
+
+# rad_center_fahrbahn_z_local_*_m
+
+# rad_center_fahrbahn_z0_local_*_m      (Z Wert des Hitpunktes von Rad Zentrum auf der Fahrbahn in frame 0, ohne Rad-Radius)
+
+# rad_center_fahrbahn_z_rel_local_*_m
+
+#
+
+# * = VL, VR, HL, HR
+
+#
+
+# 5. Rad-envelope Road Input:
+
+# rad_envelope_required_max_z_local_*_m
+
+# rad_envelope_required_max_z0_local_*_m
+
+# rad_envelope_required_max_z_rel_local_*_m
+
+# rad_envelope_contact_offset_y_local_*_m
+
+#
+
+# 6. Raycast-Diagnose:
+
+# rad_center_hit_*_bool
+
+# rad_envelope_hit_count_*
+
+#
+
+# Wichtig:!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# - Nach der aenderung der Fahrspur oder der Fahrbahn MUSS die Animation neu gespielt werden,
+#  und MUSS diese Skript erneut ausgefuehrt werden, um die Road Input CSV zu aktualisieren.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+# - Dieses Skript bewegt keine Objekte dauerhaft.
+
+# - Dieses Skript schreibt keine Keyframes.
+
+# - Dieses Skript backt keine Simulation.
+
+# - Dieses Skript veraendert keine Federung.
+
+# - Waehrend des Exports wird die Szene frameweise ausgewertet.
+
+# - Nach dem Export wird der urspruengliche Frame wiederhergestellt.
+
+#
+
+# Ergebnis:
+
+# - road_input.csv im Ordner der .blend-Datei.
+
+# ============================================================
+
+# ============================================================
 
 import bpy
 import csv
@@ -25,7 +193,7 @@ from pathlib import Path
 bl_info = {
     "name": "Vehicle Dynamics Toolchain",
     "author": "OpenAI / project integration",
-    "version": (1, 3, 0),
+    "version": (1, 3, 1),
     "blender": (3, 6, 0),
     "location": "3D View > Sidebar > Road Input",
     "description": "Export road input, solve vehicle response and bake animation",
@@ -33,9 +201,9 @@ bl_info = {
 }
 
 
-# -----------------------------------------------------------------------------
-# Gemeinsame Konfiguration: Objektnamen, Dateien und Standardparameter
-# -----------------------------------------------------------------------------
+# ============================================================
+# 0. Object names
+# ============================================================
 
 CAR_OBJECT_NAME = "Fahrzeug_Pfadsteuerung"
 FAHRBAHN_OBJECT_NAME = "Fahrbahn_Kollider"
@@ -105,12 +273,16 @@ DEFAULT_SOLVER_PARAMETER = {
     "LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2": 0.5,
     "LAENGS_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES": 5,
     "LAENGS_BESCHLEUNIGUNG_TOTZONE_MPS2": 0.10,
+    "QUER_BESCHLEUNIGUNG_SPITZENFILTER_FENSTER_FRAMES": 5,
+    "QUER_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2": 0.5,
+    "QUER_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES": 5,
+    "QUER_BESCHLEUNIGUNG_TOTZONE_MPS2": 0.10,
     "BERECHNUNG_UNTERSCHRITTE_PRO_FRAME": 20,
 }
 
-# -----------------------------------------------------------------------------
-# Exporter: Projektpfade, Objekte, Raycasts und Setup-Validierung
-# -----------------------------------------------------------------------------
+# ============================================================
+# 1. Basic helper
+# ============================================================
 
 def get_obj(object_name):
     obj = bpy.data.objects.get(object_name)
@@ -135,14 +307,24 @@ def get_project_path(filename):
     return get_project_directory() / filename
 
 
-def get_configured_output_path(context, property_name, default_filename):
+def get_configured_output_path(context, property_name, fallback_filename):
     parameter = context.scene.road_input_vehicle_parameter
-    configured_path = getattr(parameter, property_name).strip()
-
-    if configured_path == "":
-        return get_project_path(default_filename)
-
+    configured_path = getattr(parameter, property_name, "").strip()
+    if not configured_path:
+        configured_path = "//" + fallback_filename
     return Path(bpy.path.abspath(configured_path))
+
+
+def ensure_output_path_allowed(context, output_path):
+    if not output_path.parent.is_dir():
+        raise ValueError(
+            "Ausgabeordner existiert nicht: " + str(output_path.parent)
+        )
+    parameter = context.scene.road_input_vehicle_parameter
+    if output_path.exists() and not parameter.ausgabedateien_ueberschreiben:
+        raise FileExistsError(
+            "Ausgabedatei existiert bereits: " + str(output_path)
+        )
 
 
 def collect_mesh_children(obj):
@@ -283,9 +465,7 @@ def validate_scene_output_and_parameters(context):
         (
             "Road Input CSV",
             get_configured_output_path(
-                context,
-                "road_input_csv_output_path",
-                ROAD_INPUT_FILENAME,
+                context, "road_input_csv_output_path", ROAD_INPUT_FILENAME
             ),
             ".csv",
         ),
@@ -308,7 +488,6 @@ def validate_scene_output_and_parameters(context):
             ".csv",
         ),
     ]
-
     for label, output_path, expected_suffix in output_paths:
         if output_path.suffix.lower() != expected_suffix:
             raise ValueError(
@@ -316,7 +495,7 @@ def validate_scene_output_and_parameters(context):
             )
         if not output_path.parent.is_dir():
             raise ValueError(
-                f"Ausgabeordner fuer {label} ist ungueltig: "
+                f"Ausgabeordner fuer {label} existiert nicht: "
                 + str(output_path.parent)
             )
 
@@ -359,6 +538,26 @@ def get_active_old_raycast_handler_names():
         if getattr(handler, "__name__", "")
         in OLD_RAYCAST_HANDLER_NAMES
     })
+
+
+def suspend_old_raycast_handlers():
+    handler_list = bpy.app.handlers.frame_change_post
+    suspended = [
+        (index, handler)
+        for index, handler in enumerate(list(handler_list))
+        if getattr(handler, "__name__", "") in OLD_RAYCAST_HANDLER_NAMES
+    ]
+    for _index, handler in suspended:
+        if handler in handler_list:
+            handler_list.remove(handler)
+    return suspended
+
+
+def restore_old_raycast_handlers(suspended):
+    handler_list = bpy.app.handlers.frame_change_post
+    for index, handler in suspended:
+        if handler not in handler_list:
+            handler_list.insert(min(index, len(handler_list)), handler)
 
 
 def validate_current_frame_raycast():
@@ -502,7 +701,7 @@ def validate_export_setup(context):
         warnings.append(
             "Alte Raycast-Federweg-Handler aktiv: "
             + ", ".join(old_handler_names)
-            + ". Sie wurden nicht entfernt."
+            + ". Sie werden nur waehrend des Exports temporaer deaktiviert."
         )
     else:
         passed_checks.append("Raycast-Handler")
@@ -536,7 +735,9 @@ def validate_export_setup(context):
     }
 
 
-# Radmittelpunkt-Raycast fuer einen Frame
+# ============================================================
+# 7. Read Rad center Fahrbahn data for current frame
+# ============================================================
 
 def read_rad_center_fahrbahn_current_frame(
     car_eval,
@@ -608,7 +809,9 @@ def read_rad_center_fahrbahn_current_frame(
 
     return rad_center_fahrbahn_data
 
-# Fuenfpunkt-Reifenhuellen-Raycast fuer einen Frame
+# ============================================================
+# 8. Read Rad envelope Fahrbahn data for current frame
+# ============================================================
 
 def read_rad_envelope_fahrbahn_current_frame(
     car_eval,
@@ -765,15 +968,24 @@ def read_rad_envelope_fahrbahn_current_frame(
     return rad_envelope_fahrbahn_data
 
 
-# Statische Fahrzeuggeometrie und automatische Radradius-Ermittlung
+# ============================================================
+# 9. Read static Fahrzeuggeometrie
+# ============================================================
 
 def estimate_rad_radius_from_mesh(rad_key, rad_object_name, depsgraph):
     rad_drehung_obj = get_obj(rad_object_name)
     rad_drehung_eval = rad_drehung_obj.evaluated_get(depsgraph)
 
-    # Die Objektskalierung muss in die Radiusmessung eingehen. Deshalb
-    # verwendet das Mess-Koordinatensystem nur Translation und Rotation;
-    # matrix_world.inverted() wuerde die Radskalierung herauskuerzen.
+    # Wichtig:
+    # Fuer die Radius-Messung darf die Skala des Rad-Objekts
+    # NICHT aus dem Koordinatensystem herausgerechnet werden.
+    #
+    # Grund:
+    # Wenn rad_drehung_obj selbst ein Mesh ist und skaliert wurde,
+    # wuerde matrix_world.inverted() diese Skala wieder herauskuerzen.
+    #
+    # Deshalb wird fuer das Mess-Koordinatensystem nur Translation
+    # und Rotation des Rad-Objekts verwendet, aber keine Skala.
     rad_drehung_pos_world_vec = (
         rad_drehung_eval.matrix_world.translation.copy()
     )
@@ -989,7 +1201,9 @@ def read_static_vehicle_geometry(static_geometry_frame):
     return static_geometry_data
 
 
-# Vollstaendigen Rohdatensatz fuer einen Frame erfassen
+# ============================================================
+# 10. Read all Groessen for one frame
+# ============================================================
 
 def read_groessen_current_frame(
     frame,
@@ -1102,7 +1316,9 @@ def read_groessen_current_frame(
 
     return frame_data
 
-# Rohdaten ueber den gesamten Frame-Bereich erfassen
+# ============================================================
+# 11. Read Groessen for all frames
+# ============================================================
 
 def read_groessen_all_frames():
     scene = bpy.context.scene
@@ -1149,7 +1365,9 @@ def read_groessen_all_frames():
 
     return frame_data_list
 
-# Geschwindigkeiten, Beschleunigungen und Gierraten berechnen
+# ============================================================
+# 12. Compute car kinematics from all frames
+# ============================================================
 
 def unwrap_yaw_angle_rad(yaw_rad, previous_yaw_unwrapped_rad):
     yaw_unwrapped_rad = yaw_rad
@@ -1385,7 +1603,9 @@ def compute_car_kinematics(frame_data_list):
 
     return frame_data_list
 
-# Strassenanregung relativ zum Referenzframe berechnen
+# ============================================================
+# 13. Compute relative road input
+# ============================================================
 
 def compute_relative_road_input(frame_data_list):
     print("============================================================")
@@ -1471,7 +1691,9 @@ def compute_relative_road_input(frame_data_list):
 
     return frame_data_list
 
-# road_input.csv aufbauen und sicher schreiben
+# ============================================================
+# 14. Export road input CSV
+# ============================================================
 
 def build_csv_fieldnames():
     fieldnames = [
@@ -1555,29 +1777,34 @@ def build_csv_fieldnames():
 
     return fieldnames
 
-def write_road_input_csv(frame_data_list, context):
+def write_road_input_csv(context, frame_data_list):
     if len(frame_data_list) == 0:
         raise ValueError("frame_data_list ist leer. CSV kann nicht geschrieben werden.")
 
     csv_path = get_configured_output_path(
-        context,
-        "road_input_csv_output_path",
-        ROAD_INPUT_FILENAME,
+        context, "road_input_csv_output_path", ROAD_INPUT_FILENAME
     )
+    ensure_output_path_allowed(context, csv_path)
+    temp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
 
     fieldnames = build_csv_fieldnames()
 
-    with open(csv_path, mode="w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=fieldnames,
-            extrasaction="ignore",
-        )
-
-        writer.writeheader()
-
-        for frame_data in frame_data_list:
-            writer.writerow(frame_data)
+    try:
+        with temp_path.open(
+            mode="w", newline="", encoding="utf-8"
+        ) as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            for frame_data in frame_data_list:
+                writer.writerow(frame_data)
+        temp_path.replace(csv_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
     print("============================================================")
     print("Road Input Exporter - CSV Export")
@@ -1590,20 +1817,23 @@ def write_road_input_csv(frame_data_list, context):
 
     return csv_path
 
-# Exporter-Pipeline
+# ============================================================
+# 15. Full export pipeline
+# ============================================================
 
 def export_road_input_csv(context):
     print("============================================================")
     print("Road Input Exporter - Full Export Pipeline")
     print("============================================================")
 
-    frame_data_list = read_groessen_all_frames()
-
-    frame_data_list = compute_car_kinematics(frame_data_list)
-
-    frame_data_list = compute_relative_road_input(frame_data_list)
-
-    csv_path = write_road_input_csv(frame_data_list, context)
+    suspended_handlers = suspend_old_raycast_handlers()
+    try:
+        frame_data_list = read_groessen_all_frames()
+        frame_data_list = compute_car_kinematics(frame_data_list)
+        frame_data_list = compute_relative_road_input(frame_data_list)
+        csv_path = write_road_input_csv(context, frame_data_list)
+    finally:
+        restore_old_raycast_handlers(suspended_handlers)
 
     print("============================================================")
     print("FERTIG: Road Input Export abgeschlossen.")
@@ -1613,31 +1843,33 @@ def export_road_input_csv(context):
     return csv_path
 
 
-# -----------------------------------------------------------------------------
-# Solverparameter: Blender-Eigenschaften und vehicle_parameter.json
-# -----------------------------------------------------------------------------
-# Modellparameter bleiben von den gemessenen Daten in road_input.csv getrennt.
+# ============================================================
+# 16. Fahrzeugparameter Json
+# Diese Parameter gehoeren zum Solver Modell und werden nicht in den CSV sondern als Json exportiert.
+#
 
-class ROADINPUT_VehicleParameter(bpy.types.PropertyGroup):
+class ROADINPUT_VehicleParameter(bpy.types.PropertyGroup): 
     road_input_csv_output_path: bpy.props.StringProperty(
         name="Road Input CSV",
-        description="Ausgabedatei fuer die exportierte Strassenanregung",
         default="//road_input.csv",
         subtype="FILE_PATH",
     )
 
     vehicle_parameter_json_output_path: bpy.props.StringProperty(
         name="Vehicle Parameter JSON",
-        description="Ausgabedatei fuer die Solverparameter",
         default="//vehicle_parameter.json",
         subtype="FILE_PATH",
     )
 
     vehicle_response_csv_output_path: bpy.props.StringProperty(
         name="Vehicle Response CSV",
-        description="Solver-Ausgabe und Eingabedatei fuer den Baker",
         default="//vehicle_response.csv",
         subtype="FILE_PATH",
+    )
+
+    ausgabedateien_ueberschreiben: bpy.props.BoolProperty(
+        name="Ausgabedateien ueberschreiben",
+        default=True,
     )
 
     fahrzeugmasse_kg: bpy.props.FloatProperty(
@@ -1775,6 +2007,42 @@ class ROADINPUT_VehicleParameter(bpy.types.PropertyGroup):
         precision=3,
     )
 
+    quer_glaettungsfenster_frames: bpy.props.IntProperty(
+        name="Quer-Glaettungsfenster [Frames]",
+        description="Ungerade kausale Fensterbreite fuer die Beschleunigungsglaettung",
+        default=5,
+        min=1,
+        max=21,
+        step=2,
+    )
+
+    quer_spitzenfilter_fenster_frames: bpy.props.IntProperty(
+        name="Quer-Spitzenfilter [Frames]",
+        description="Ungerade kausale Fensterbreite fuer den lokalen Median",
+        default=5,
+        min=1,
+        max=21,
+        step=2,
+    )
+
+    quer_spitzenfilter_schwelle_mps2: bpy.props.FloatProperty(
+        name="Quer-Spitzen-Schwelle [m/s²]",
+        description="Groessere Abweichungen vom lokalen Median werden ersetzt",
+        default=0.5,
+        min=0.0,
+        max=20.0,
+        precision=3,
+    )
+
+    quer_totzone_mps2: bpy.props.FloatProperty(
+        name="Quer-Totzone [m/s²]",
+        description="Kleinere geglaettete Querbeschleunigungen werden zu null",
+        default=0.10,
+        min=0.0,
+        max=5.0,
+        precision=3,
+    )
+
     berechnung_unterschritte_pro_frame: bpy.props.IntProperty(
         name="Solver-Unterschritte pro Frame",
         default=20,
@@ -1817,6 +2085,16 @@ def build_vehicle_parameter_dict(context):
             parameter.laengs_glaettungsfenster_frames
         ),
         "LAENGS_BESCHLEUNIGUNG_TOTZONE_MPS2": parameter.laengs_totzone_mps2,
+        "QUER_BESCHLEUNIGUNG_SPITZENFILTER_FENSTER_FRAMES": (
+            parameter.quer_spitzenfilter_fenster_frames
+        ),
+        "QUER_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2": (
+            parameter.quer_spitzenfilter_schwelle_mps2
+        ),
+        "QUER_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES": (
+            parameter.quer_glaettungsfenster_frames
+        ),
+        "QUER_BESCHLEUNIGUNG_TOTZONE_MPS2": parameter.quer_totzone_mps2,
         "BERECHNUNG_UNTERSCHRITTE_PRO_FRAME": (
             parameter.berechnung_unterschritte_pro_frame
         ),
@@ -1826,20 +2104,26 @@ def build_vehicle_parameter_dict(context):
 
 def write_vehicle_parameter_json(context):
     vehicle_parameter_data = build_vehicle_parameter_dict(context)
-
     json_path = get_configured_output_path(
         context,
         "vehicle_parameter_json_output_path",
         VEHICLE_PARAMETER_FILENAME,
     )
+    ensure_output_path_allowed(context, json_path)
+    temp_path = json_path.with_suffix(json_path.suffix + ".tmp")
 
-    with open(json_path, mode="w", encoding="utf-8") as json_file:
-        json.dump(
-            vehicle_parameter_data,
-            json_file,
-            indent=4,
-            ensure_ascii=False,
-        )
+    try:
+        with temp_path.open(mode="w", encoding="utf-8") as json_file:
+            json.dump(
+                vehicle_parameter_data,
+                json_file,
+                indent=4,
+                ensure_ascii=False,
+            )
+        temp_path.replace(json_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
     print("============================================================")
     print("Road Input Exporter - Vehicle Parameter JSON Export")
@@ -1850,9 +2134,9 @@ def write_vehicle_parameter_json(context):
 
     return json_path
 
-# -----------------------------------------------------------------------------
-# Solver: vier unabhaengige Viertelfahrzeugmodelle und Karosserie-Rekonstruktion
-# -----------------------------------------------------------------------------
+# ============================================================
+# 17. Viertelfahrzeug-Solver
+# ============================================================
 
 def read_csv_rows(csv_path):
     if not csv_path.exists():
@@ -1964,51 +2248,33 @@ def validate_solver_parameter(parameter):
     if not math.isfinite(roll_scale) or not 0.0 <= roll_scale <= 2.0:
         raise ValueError("ROLLEN_SKALIERUNG muss zwischen 0 und 2 liegen.")
 
-    spike_window = parameter[
-        "LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_FENSTER_FRAMES"
-    ]
-    if (
-        isinstance(spike_window, bool)
-        or not float(spike_window).is_integer()
-        or int(spike_window) < 1
-        or int(spike_window) % 2 == 0
-    ):
-        raise ValueError(
-            "LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_FENSTER_FRAMES muss "
-            "eine ungerade ganze Zahl groesser oder gleich 1 sein."
-        )
+    for prefix in ["LAENGS_BESCHLEUNIGUNG", "QUER_BESCHLEUNIGUNG"]:
+        for suffix in [
+            "SPITZENFILTER_FENSTER_FRAMES",
+            "GLAETTUNGSFENSTER_FRAMES",
+        ]:
+            key = prefix + "_" + suffix
+            window = parameter[key]
+            if (
+                isinstance(window, bool)
+                or not float(window).is_integer()
+                or int(window) < 1
+                or int(window) % 2 == 0
+            ):
+                raise ValueError(
+                    key + " muss eine ungerade ganze Zahl "
+                    "groesser oder gleich 1 sein."
+                )
 
-    spike_threshold_mps2 = float(
-        parameter["LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2"]
-    )
-    if (
-        not math.isfinite(spike_threshold_mps2)
-        or not 0.0 <= spike_threshold_mps2 <= 20.0
-    ):
-        raise ValueError(
-            "LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2 muss "
-            "zwischen 0 und 20 liegen."
-        )
+        threshold_key = prefix + "_SPITZENFILTER_SCHWELLE_MPS2"
+        threshold = float(parameter[threshold_key])
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 20.0:
+            raise ValueError(threshold_key + " muss zwischen 0 und 20 liegen.")
 
-    smoothing_window = parameter[
-        "LAENGS_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES"
-    ]
-    if (
-        isinstance(smoothing_window, bool)
-        or not float(smoothing_window).is_integer()
-        or int(smoothing_window) < 1
-        or int(smoothing_window) % 2 == 0
-    ):
-        raise ValueError(
-            "LAENGS_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES muss "
-            "eine ungerade ganze Zahl groesser oder gleich 1 sein."
-        )
-
-    dead_zone_mps2 = float(parameter["LAENGS_BESCHLEUNIGUNG_TOTZONE_MPS2"])
-    if not math.isfinite(dead_zone_mps2) or not 0.0 <= dead_zone_mps2 <= 5.0:
-        raise ValueError(
-            "LAENGS_BESCHLEUNIGUNG_TOTZONE_MPS2 muss zwischen 0 und 5 liegen."
-        )
+        dead_zone_key = prefix + "_TOTZONE_MPS2"
+        dead_zone = float(parameter[dead_zone_key])
+        if not math.isfinite(dead_zone) or not 0.0 <= dead_zone <= 5.0:
+            raise ValueError(dead_zone_key + " muss zwischen 0 und 5 liegen.")
 
     substeps = parameter["BERECHNUNG_UNTERSCHRITTE_PRO_FRAME"]
     if (
@@ -2178,16 +2444,9 @@ def initialize_solver_state():
     }
 
 
-def get_centered_window(values, index, window):
-    if len(values) <= window:
-        return values
-
-    half_window = window // 2
-    start = min(
-        max(index - half_window, 0),
-        len(values) - window,
-    )
-    return values[start:start + window]
+def get_causal_window(values, index, window):
+    start = max(0, index - window + 1)
+    return values[start:index + 1]
 
 
 def median(values):
@@ -2198,33 +2457,38 @@ def median(values):
     return (sorted_values[middle - 1] + sorted_values[middle]) / 2.0
 
 
-def filter_longitudinal_acceleration(road_input_rows, parameter):
+def filter_acceleration(
+    road_input_rows,
+    parameter,
+    input_column,
+    parameter_prefix,
+):
     raw_values = [
         read_finite_float(
             row,
-            "car_acc_forward_local_mps2",
+            input_column,
             ROAD_INPUT_FILENAME,
         )
         for row in road_input_rows
     ]
     spike_window = int(
-        parameter["LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_FENSTER_FRAMES"]
+        parameter[parameter_prefix + "_SPITZENFILTER_FENSTER_FRAMES"]
     )
     spike_threshold_mps2 = float(
-        parameter["LAENGS_BESCHLEUNIGUNG_SPITZENFILTER_SCHWELLE_MPS2"]
+        parameter[parameter_prefix + "_SPITZENFILTER_SCHWELLE_MPS2"]
     )
     smoothing_window = int(
-        parameter["LAENGS_BESCHLEUNIGUNG_GLAETTUNGSFENSTER_FRAMES"]
+        parameter[parameter_prefix + "_GLAETTUNGSFENSTER_FRAMES"]
     )
     dead_zone_mps2 = float(
-        parameter["LAENGS_BESCHLEUNIGUNG_TOTZONE_MPS2"]
+        parameter[parameter_prefix + "_TOTZONE_MPS2"]
     )
     sample_count = len(raw_values)
     despiked_values = []
     filtered_values = []
 
     for index in range(sample_count):
-        local_values = get_centered_window(
+        local_values = get_causal_window(
             raw_values,
             index,
             spike_window,
@@ -2238,7 +2502,7 @@ def filter_longitudinal_acceleration(road_input_rows, parameter):
         )
 
     for index in range(sample_count):
-        window_values = get_centered_window(
+        window_values = get_causal_window(
             despiked_values,
             index,
             smoothing_window,
@@ -2259,12 +2523,30 @@ def filter_longitudinal_acceleration(road_input_rows, parameter):
     return filtered_values
 
 
+def filter_longitudinal_acceleration(road_input_rows, parameter):
+    return filter_acceleration(
+        road_input_rows,
+        parameter,
+        "car_acc_forward_local_mps2",
+        "LAENGS_BESCHLEUNIGUNG",
+    )
+
+
+def filter_lateral_acceleration(road_input_rows, parameter):
+    return filter_acceleration(
+        road_input_rows,
+        parameter,
+        "car_acc_lateral_local_mps2",
+        "QUER_BESCHLEUNIGUNG",
+    )
+
+
 def calculate_load_transfer_forces(
-    row,
     parameter,
     track_width_m,
     wheelbase_m,
     longitudinal_acceleration_mps2,
+    lateral_acceleration_mps2,
 ):
     additional_forces = {rad_key: 0.0 for rad_key in RAD_OBJECT_NAMES}
     longitudinal_force = 0.0
@@ -2291,7 +2573,7 @@ def calculate_load_transfer_forces(
         lateral_force = (
             parameter["LASTVERLAGERUNG_QUER_VORZEICHEN"]
             * parameter["FAHRZEUGMASSE_KG"]
-            * float(row["car_acc_lateral_local_mps2"])
+            * lateral_acceleration_mps2
             * parameter["SCHWERPUNKT_HOEHE_M"]
             / track_width_m
         )
@@ -2400,6 +2682,25 @@ def calculate_vehicle_response_rows(fieldnames, road_input_rows, parameter):
             for _ in road_input_rows
         ]
 
+    if (
+        parameter["LASTVERLAGERUNG_AKTIV"]
+        and parameter["LASTVERLAGERUNG_QUER_AKTIV"]
+    ):
+        lateral_acceleration_data = filter_lateral_acceleration(
+            road_input_rows,
+            parameter,
+        )
+    else:
+        lateral_acceleration_data = [
+            {
+                "raw_mps2": 0.0,
+                "despiked_mps2": 0.0,
+                "smoothed_mps2": 0.0,
+                "solver_mps2": 0.0,
+            }
+            for _ in road_input_rows
+        ]
+
     for index, row in enumerate(road_input_rows):
         frame = int(float(row["frame"]))
         t_s = float(row["t_s"])
@@ -2407,14 +2708,15 @@ def calculate_vehicle_response_rows(fieldnames, road_input_rows, parameter):
         wheelbase_m = float(row["car_radstand_mean_m"])
         track_width_m = float(row["car_spurweite_mean_m"])
         acceleration_data = longitudinal_acceleration_data[index]
+        lateral_data = lateral_acceleration_data[index]
 
         load_forces, longitudinal_force, lateral_force = (
             calculate_load_transfer_forces(
-                row,
                 parameter,
                 track_width_m,
                 wheelbase_m,
                 acceleration_data["solver_mps2"],
+                lateral_data["solver_mps2"],
             )
         )
         road_excitation = {
@@ -2433,6 +2735,10 @@ def calculate_vehicle_response_rows(fieldnames, road_input_rows, parameter):
                 acceleration_data["smoothed_mps2"]
             ),
             "car_acc_forward_solver_mps2": acceleration_data["solver_mps2"],
+            "car_acc_lateral_raw_mps2": lateral_data["raw_mps2"],
+            "car_acc_lateral_despiked_mps2": lateral_data["despiked_mps2"],
+            "car_acc_lateral_smoothed_mps2": lateral_data["smoothed_mps2"],
+            "car_acc_lateral_solver_mps2": lateral_data["solver_mps2"],
             "lastverlagerung_laengs_kraft_N": longitudinal_force,
             "lastverlagerung_quer_kraft_N": lateral_force,
         }
@@ -2537,9 +2843,7 @@ def calculate_vehicle_response_rows(fieldnames, road_input_rows, parameter):
 
 def solve_vehicle_response(context):
     road_input_path = get_configured_output_path(
-        context,
-        "road_input_csv_output_path",
-        ROAD_INPUT_FILENAME,
+        context, "road_input_csv_output_path", ROAD_INPUT_FILENAME
     )
     parameter_path = get_configured_output_path(
         context,
@@ -2551,6 +2855,7 @@ def solve_vehicle_response(context):
         "vehicle_response_csv_output_path",
         VEHICLE_RESPONSE_FILENAME,
     )
+    ensure_output_path_allowed(context, response_path)
 
     fieldnames, road_input_rows = read_csv_rows(road_input_path)
     parameter = load_solver_parameter(parameter_path)
@@ -2565,9 +2870,9 @@ def solve_vehicle_response(context):
     return response_path
 
 
-# -----------------------------------------------------------------------------
-# Baker: vehicle_response.csv validieren und auf Blender-Objekte backen
-# -----------------------------------------------------------------------------
+# ============================================================
+# 18. Vehicle Response Baker
+# ============================================================
 
 def required_response_columns():
     columns = [
@@ -2670,8 +2975,29 @@ def bake_vehicle_response(context):
     body, wheels = get_bake_targets()
     scene = bpy.context.scene
     original_frame = scene.frame_current
+    first_row = parsed_rows[0]
+    first_frame = first_row["frame"]
 
     try:
+        scene.frame_set(first_frame)
+        body_base_z = (
+            body.location.z - first_row["karosserie_hub_local_m"]
+        )
+        body_base_pitch = (
+            body.rotation_euler.x - first_row["karosserie_nicken_rad"]
+        )
+        body_base_roll = (
+            body.rotation_euler.y - first_row["karosserie_rollen_rad"]
+        )
+        wheel_base_z = {
+            rad_key: (
+                wheel.location.z
+                - first_row["karosserie_z_am_rad_" + rad_key + "_m"]
+                - first_row["rad_federweg_z_local_" + rad_key + "_m"]
+            )
+            for rad_key, wheel in wheels.items()
+        }
+
         body.animation_data_clear()
         for wheel in wheels.values():
             wheel.animation_data_clear()
@@ -2681,17 +3007,21 @@ def bake_vehicle_response(context):
             scene.frame_set(frame)
 
             body.location.z = (
-                KAROSSERIE_BASIS_Z_LOCAL_M
+                body_base_z
                 + row["karosserie_hub_local_m"]
             )
-            body.rotation_euler.x = row["karosserie_nicken_rad"]
-            body.rotation_euler.y = row["karosserie_rollen_rad"]
+            body.rotation_euler.x = (
+                body_base_pitch + row["karosserie_nicken_rad"]
+            )
+            body.rotation_euler.y = (
+                body_base_roll + row["karosserie_rollen_rad"]
+            )
             body.keyframe_insert(data_path="location", frame=frame)
             body.keyframe_insert(data_path="rotation_euler", frame=frame)
 
             for rad_key, wheel in wheels.items():
                 wheel.location.z = (
-                    RAD_FEDERUNG_BASIS_Z_LOCAL_M[rad_key]
+                    wheel_base_z[rad_key]
                     + row["karosserie_z_am_rad_" + rad_key + "_m"]
                     + row["rad_federweg_z_local_" + rad_key + "_m"]
                 )
@@ -2707,6 +3037,20 @@ def bake_vehicle_response(context):
 def export_input_files(context, validate=True):
     if validate:
         validate_export_setup(context)
+    ensure_output_path_allowed(
+        context,
+        get_configured_output_path(
+            context, "road_input_csv_output_path", ROAD_INPUT_FILENAME
+        ),
+    )
+    ensure_output_path_allowed(
+        context,
+        get_configured_output_path(
+            context,
+            "vehicle_parameter_json_output_path",
+            VEHICLE_PARAMETER_FILENAME,
+        ),
+    )
     csv_path = export_road_input_csv(context)
     json_path = write_vehicle_parameter_json(context)
     return csv_path, json_path
@@ -2720,11 +3064,18 @@ def run_complete_pipeline(context):
     return csv_path, json_path, response_path
 
 
-# -----------------------------------------------------------------------------
-# Blender-UI: 3D Viewport -> N -> Road Input
-# -----------------------------------------------------------------------------
-# Beim Registrieren startet keine Berechnung; alle Schritte werden per Button
-# einzeln oder ueber "Run Complete Pipeline" ausgefuehrt.
+# ============================================================
+# 19. Blender UI
+# ============================================================
+#
+# Wirkung:
+# - Beim Ausfuehren des Skripts wird nur die UI registriert.
+# - Der Export startet NICHT automatisch.
+# - Der Benutzer startet Tests oder Export ueber Buttons im Blender N-Panel.
+#
+# In Blender:
+# 3D Viewport -> Taste N -> Tab "Road Input"
+#
 
 def run_all_diagnostic_tests(context):
     return validate_export_setup(context)
@@ -2841,15 +3192,17 @@ class ROADINPUT_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        parameter = context.scene.road_input_vehicle_parameter
 
         layout.label(text="Exporter + Solver + Baker")
 
         layout.separator()
         layout.label(text="Output Paths")
+
+        parameter = context.scene.road_input_vehicle_parameter
         layout.prop(parameter, "road_input_csv_output_path")
         layout.prop(parameter, "vehicle_parameter_json_output_path")
         layout.prop(parameter, "vehicle_response_csv_output_path")
+        layout.prop(parameter, "ausgabedateien_ueberschreiben")
 
         layout.separator()
 
@@ -2918,6 +3271,10 @@ class ROADINPUT_PT_panel(bpy.types.Panel):
         layout.prop(parameter, "laengs_spitzenfilter_schwelle_mps2")
         layout.prop(parameter, "laengs_glaettungsfenster_frames")
         layout.prop(parameter, "laengs_totzone_mps2")
+        layout.prop(parameter, "quer_spitzenfilter_fenster_frames")
+        layout.prop(parameter, "quer_spitzenfilter_schwelle_mps2")
+        layout.prop(parameter, "quer_glaettungsfenster_frames")
+        layout.prop(parameter, "quer_totzone_mps2")
         layout.prop(parameter, "rollen_skalierung")
 
         layout.separator()
