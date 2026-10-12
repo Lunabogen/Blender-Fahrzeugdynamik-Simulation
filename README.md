@@ -1,261 +1,167 @@
-# Blender-Fahrzeugdynamik-Simulation
+# Blender-Fahrzeugdynamik
+## Kurzanleitung
 
-Python-Toolchain zur Erfassung der Strassenanregung in Blender, zur Berechnung
-einer vereinfachten vertikalen Fahrzeugreaktion und zum Backen der Ergebnisse
-als Keyframes.
+**Vehicle Dynamics Toolchain v1.6.5** · README · 12. Oktober 2026
 
-## Datenfluss
+Modelle einsetzen, Fahrwege bearbeiten, Parameter einstellen und die Animation erzeugen. Die Anleitung folgt dem aktuellen Skript und enthält alle 30 Panel-Einstellungen.
 
-```text
-Blender-Animation
-    -> road_input.csv
-    -> vehicle_parameter.json
-    -> Viertelfahrzeug-Solver
-    -> vehicle_response.csv
-    -> Blender-Keyframes
-```
+## 1 Grundidee des Codes
 
-`Vehicle_Dynamics_Toolchain.py` enthaelt Exporter, Solver, Baker und Blender-UI
-in einer Datei. Die einzelnen Stufen koennen getrennt ausgefuehrt werden; mit
-**Run Complete Pipeline** laufen sie nacheinander.
+PfadFolgen steuert Fahrposition und Ausrichtung. Das Skript liest diese Bewegung und die Fahrbahn je Frame, filtert die Beschleunigung, berechnet die vier Radreaktionen und erzeugt die Karosseriebewegung.
 
-## Modellidee
+| **Schritt** | **Ergebnis** |
+| ----------- | ----------------------------------------------------------------------------------------------- |
+| Export | Fahrbewegung und Straßenhöhen als CSV; Panelparameter als JSON. |
+| Solver | Federbewegung, Karosseriehub, Nicken und Rollen als Response-CSV. |
+| Baker | Karosserie_Steuerung: Position Z und Rotation X/Y. Vier Federung_Steuerungen: nur Position Z. |
 
-Das Modell verwendet vier unabhaengige Viertelfahrzeugmodelle fuer die Ecken
-VL, VR, HL und HR. Jede Ecke besitzt eine gefederte und eine ungefederte Masse,
-eine Feder, einen Daempfer und einen Reifen. Aus den vier vertikalen Antworten
-werden anschliessend Karosserie-Hub, Nicken und Rollen kinematisch rekonstruiert.
+Lokale X/Y-Positionen und Skalierungen werden nicht gebacken. Lenkung und Raddrehung bleiben Aufgabe der vorhandenen Steuerung. Der erste Animationsframe dient als Höhenbasis; anfangs versunkene Räder werden nicht automatisch angehoben.
 
-Es handelt sich um ein vereinfachtes Visualisierungsmodell, nicht um ein
-vollstaendiges Mehrkoerper-Fahrdynamikmodell. Die Vorzeichen der Laengs- und
-Querlastverlagerung muessen im konkreten Blender-Achsensystem visuell geprueft
-werden.
+## 2 Modell ersetzen und binden
+1. Modell importieren und in Karosserie sowie vier Räder aufteilen. Räder nicht mit der Karosserie verbinden.
+2. Am Startframe Größe, Richtung und Radpositionen anpassen. Im Fahrzeugbezug zeigt +Y nach vorne, +X nach rechts und +Z nach oben.
+3. Neue Meshes an die vorhandenen Zweige hängen. Erst das Mesh, zuletzt den Elternteil wählen; Strg + P und Objekt mit beibehaltenem Transform verwenden.
 
-## Voraussetzungen
+| **Neues Modellteil** | **Elternobjekt im vorhandenen Fahrzeug** |
+| ----------------------- | ---------------------------------------------------------- |
+| Karosserie | Karosserie als vorhandenes Kind von Karosserie_Steuerung |
+| Vorne links / rechts | Rad_VorneLinks / Rad_VorneRechts |
+| Hinten links / rechts | Rad_HintenLinks / Rad_HintenRechts |
 
-* gespeicherte `.blend`-Datei
-* keine zusaetzlichen Python-Pakete
-* passende Objektnamen in der Blender-Szene
+Die Kette Federung → Sturz/Lenkung → Drehung → Rad bleibt erhalten. Rad…Mate/KaroMate und die vom Skript gesuchten Objekte nicht ungezielt löschen. Alte Radgeometrie darf die automatische Radiusmessung nicht verfälschen; auch versteckte Meshes werden berücksichtigt.
 
-### Eingabeobjekte
+Radmitte und Drehung-Steuerung müssen dieselbe Achse haben. Bei Unwucht den übergeordneten Drehpunkt prüfen. Bei zu niedriger Gesamtposition die gemeinsame Fahrzeug_Hauptsteuerung anheben. Spurweite, Radstand und Radius werden beim Export gelesen. Steuerungen der Kopien tragen _02, _03 usw.; Namen der visuellen Meshes sind frei.
 
-| Funktion                                    | Objektname               |
-| ------------------------------------------- | ------------------------ |
-| Lokale Fahrzeugreferenz und Fahrtrajektorie | `Fahrzeug_Pfadsteuerung` |
-| Raycast-Kollider der Fahrbahn               | `Fahrbahn_Kollider`      |
-| Rad vorne links                             | `Rad_VorneLinks`         |
-| Rad vorne rechts                            | `Rad_VorneRechts`        |
-| Rad hinten links                            | `Rad_HintenLinks`        |
-| Rad hinten rechts                           | `Rad_HintenRechts`       |
+## 3 Modell kopieren und das Fahrzeug bearbeiten
 
-### Bake-Ziele
+### Ein neues Fahrzeug erstellen
+1. In Objektmodus wechseln. Im Panel Road Input einen neuen Fahrzeug-Index eintragen, z. B. 02. Kopiervorlage ist immer 01.
+2. Gemeinsamen Pfad verwenden: Aus = eigener Fahrweg, Ein = gemeinsamer Fahrweg mit 01. Diese Option gilt nur bei Neuerstellung.
+3. Fahrzeug erstellen / bestätigen drücken. Die neue Kopie erhält _02 und liegt zunächst an derselben Stelle wie 01.
 
-| Funktion               | Objektname                            |
-| ---------------------- | ------------------------------------- |
-| Karosserie             | `Karosserie_Steuerung`                |
-| Federung vorne links   | `Rad_VorneLinks_Federung_Steuerung`   |
-| Federung vorne rechts  | `Rad_VorneRechts_Federung_Steuerung`  |
-| Federung hinten links  | `Rad_HintenLinks_Federung_Steuerung`  |
-| Federung hinten rechts | `Rad_HintenRechts_Federung_Steuerung` |
+### Was wird kopiert
 
-`local` bezeichnet in der gesamten Toolchain ausschliesslich das lokale
-Koordinatensystem von `Fahrzeug_Pfadsteuerung`.
+| **Bestandteil** | **Verhalten beim Erstellen** |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Steuerung und Hierarchie | Fahrzeug_Pfadsteuerung samt Kindern: Hauptsteuerung, Karosserie, Radsteuerungen, Lenkung und gebundene Objekte. Kameras nur, wenn sie in diesem Zweig liegen. |
+| Vorausschau | Vorausschau_Steuerung und ihre Kinder werden auch als separater Zweig kopiert. |
+| Modelle und Geometrie | Gebundene Meshes mit eigenen Mesh-Daten; ebenso Kurvendaten. Die Geometrie von 02 ist getrennt bearbeitbar. |
+| Beschränkungen und Modifier | Einstellungen werden übernommen, interne Ziele auf 02 umgestellt. Shrinkwrap behält Fahrbahn_Kollider als Ziel. |
+| Animation und Driver | Eigene Animationsaktionen, umgestellte Driver-Ziele. Alte Bake-Schlüssel auf Karosserie und Federung werden in der Kopie entfernt. |
+| Fahrweg | Standard: eigener TestPfad_02 mit Einstellungen. Bei gemeinsamer Pfadoption wird der Pfad von 01 verwendet. |
+| Gemeinsame Ressourcen | Stadt und Fahrbahn_Kollider werden nicht kopiert. Materialien, Texturen und Node-Gruppen können gemeinsam bleiben. |
 
-## Installation und Start
+### Fahrzeug auswählen und einzeln ändern
+1. Für Export, Solver und Bake Fahrzeug-Index 02 einstellen und Fahrzeug erstellen / bestätigen drücken. Ein vorhandenes Fahrzeug wird nur bestätigt, nicht erneut komplett kopiert.
+2. Im Outliner den Zweig mit _02 öffnen. Meshes: Karosserie-/Radzweig auswählen. Route: TestPfad_02. Timing: Versatzfaktor an Fahrzeug_Pfadsteuerung_02.
+3. Nur den eigenen Pfad verschieben oder drehen.
+4. Parameter für 02 im Panel einstellen und Run Complete Pipeline ausführen. Für 03 denselben Ablauf mit Index 03 wiederholen.
 
-1. `Vehicle_Dynamics_Toolchain.py` in Blender im Workspace **Scripting**
-   oeffnen.
-2. **Run Script** ausfuehren.
-3. Im 3D Viewport mit `N` die Sidebar oeffnen.
-4. Den Tab **Road Input** waehlen.
+## 4 Panelparameter für Masse und Federbewegung
 
-Das Ausfuehren des Skripts registriert nur die Benutzeroberflaeche. Export,
-Solver und Baker starten erst durch einen Button.
+Panel öffnen: Skript im Texteditor ausführen, Maus in die 3D-Ansicht, N → Road Input. Die Werte unten sind Skriptstandards; gespeicherte Szenen können andere Werte enthalten. Wirkungen gelten bei sonst gleichen Einstellungen.
 
-### Ausgabepfade
+| **Parameter und Standard** | **Verwendung** | **Größer** | **Kleiner** |
+| -------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Fahrzeugmasse [kg]<br> Standard 1800 | Fahrzeuggewicht für Berechnung und Lastverlagerung. | Mehr Trägheit und stärkere Lasttransferkräfte. | Weniger Trägheit und schwächere Lasttransferkräfte. |
+| Gefederte-Masse-Anteil [-]<br> Standard 0,85 | Anteil der Masse, die auf der Federung liegt. | Karosserie reagiert meist langsamer. | Karosserie reagiert meist schneller. |
+| Ungefederte Masse pro Rad [kg]<br> Standard 45 | Masse jedes Radbereichs. | Räder reagieren träger auf schnelle Unebenheiten. | Räder folgen Unebenheiten meist schneller. |
+| Federsteifigkeit [N/m]<br> Standard 30 000 | Stärke der Federung. | Härter; bei langsamem Lastwechsel weniger Federbewegung. | Weicher; mehr Federbewegung und größere Karosserieneigung. |
+| Daempferkonstante [N*s/m]<br> Standard 3000 | Unterdrückt Nachschwingen. | Meist weniger Nachschwingen; zu hoch macht die Bewegung träge. | Mehr und länger anhaltendes Nachschwingen. |
+| Reifensteifigkeit [N/m]<br> Standard 200 000 | Vertikale Reifenreaktion. | Weniger Reifenkompression; schnelle Radbewegungen möglich. | Mehr Reifenkompression; starre Reifenmesh können tiefer wirken. |
+| Max. Einfederung [m]<br> Standard 0,035 | Begrenzt den positiven gebackenen Federweg. | Mehr Radbewegung nach oben erlaubt. | Radbewegung nach oben wird früher abgeschnitten. |
+| Max. Ausfederung [m]<br> Standard 0,035 | Begrenzt den negativen gebackenen Federweg. | Mehr Radbewegung nach unten erlaubt. | Radbewegung nach unten wird früher abgeschnitten. |
+| Solver-Unterschritte pro Frame<br> Standard 20 | Genauigkeit und Stabilität der Berechnung. | Kleinere Rechenschritte; mehr Rechenzeit. | Schneller; höheres Risiko numerischer Schwingungen. |
 
-Im Bereich **Output Paths** koennen die Ziele fuer `road_input.csv`,
-`vehicle_parameter.json` und `vehicle_response.csv` frei gewaehlt werden. Die
-Standardwerte beginnen mit `//`; in Blender bedeutet das den Ordner der aktuell
-gespeicherten `.blend`-Datei. Solver und Baker verwenden automatisch denselben
-konfigurierten Pfad fuer `vehicle_response.csv`.
+Diese Werte ändern die berechnete Bewegung, nicht Meshgröße oder Pfadgeschwindigkeit. Die vier Räder verwenden dieselben Feder- und Reifenparameter. Federweggrenzen begrenzen die Ausgabe; sie simulieren keinen mechanischen Anschlag.
 
-## Bedienung
+### Schnelle Anpassung
 
-1. **Validate Setup** prueft Objekte, Szene, Parameter und Raycasts, ohne Dateien
-   zu exportieren oder Keyframes zu schreiben.
-2. **1. Validate + Export Inputs** erzeugt `road_input.csv` und
-   `vehicle_parameter.json`.
-3. **2. Solve vehicle_response.csv** berechnet die Fahrzeugantwort.
-4. **3. Bake Animation** schreibt die Antwort als Keyframes in die Bake-Ziele.
-5. **Run Complete Pipeline** fuehrt alle vier Schritte in dieser Reihenfolge aus.
+Zu starkes Nachschwingen: Daempferkonstante vorsichtig erhöhen. Zu große Federbewegung: Federsteifigkeit erhöhen. Versunkene Räder zuerst am Startframe ausrichten und Fahrbahn_Kollider prüfen; nicht nur die Federsteifigkeit verändern.
 
-Nach Aenderungen an Fahrbahn, Fahrspur, Objektgeometrie oder Animation muessen
-die Eingabedateien erneut exportiert und der Solver erneut ausgefuehrt werden.
+## 5 Panelparameter für Lastverlagerung und Filter
 
-## Exporter
+| **Parameter und Standard** | **Verwendung** | **Größer oder ein** | **Kleiner oder aus** |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------- |
+| Lastverlagerung aktiv<br> Standard Ein | Gesamtschalter für Lasttransfer. | Ein: Reaktion auf Bremsen, Beschleunigen und Kurven. | Aus: nur Reaktion auf Fahrbahneingaben. |
+| Laengs-Lastverlagerung aktiv<br> Standard Ein | Zusätzliche Reaktion auf Bremsen und Beschleunigen. | Ein: zusätzliches Nicken. | Aus: kein Nicken aus Längslasttransfer. |
+| Quer-Lastverlagerung aktiv<br> Standard Ein | Zusätzliche Reaktion auf Kurvenfahrt. | Ein: zusätzliche Seitenneigung. | Aus: keine Seitenneigung aus Querlasttransfer. |
+| Schwerpunkt-Hoehe [m]<br> Standard 0,55 | Stärke der Lastverlagerung. | Stärkeres Nicken und Rollen aus Lasttransfer. | Schwächeres Nicken und Rollen aus Lasttransfer. |
+| Laengs-Vorzeichen<br> Quer-Vorzeichen<br> Jeweils Standard 1 | Richtung und Stärke je Achse; negatives Vorzeichen kehrt sie um. | Größerer Betrag: stärkere Reaktion. | Kleinerer Betrag: schwächer; 0 schaltet die Achse aus. |
+| Rollen-Skalierung<br> Standard 0,5 | Skaliert die gesamte ausgegebene Seitenneigung. | Mehr sichtbare Seitenneigung. | Weniger Seitenneigung; 0 unterdrückt Rollen. |
 
-Der Exporter wertet jeden Frame des Blender-Framebereichs aus. Er bestimmt:
+### Beschleunigungsfilter
 
-* Zeit, Fahrzeugposition, Gierwinkel, Geschwindigkeit und Beschleunigung
-* Radpositionen, Spurweite und Radstand
-* Fahrbahnhoehe unter jedem Rad per Center-Raycast
-* erforderliche Reifenhoehe per Fuenfpunkt-Reifenhuellen-Raycast
-* Diagnosewerte fuer Treffer und Trefferanzahl
+Laengs wirkt auf die Brems-/Beschleunigungsreaktion, Quer auf die Kurvenreaktion. Die folgenden Paare werden getrennt eingestellt. Sie ändern den Lasttransfer, nicht den Fahrweg oder die tatsächliche Fahrgeschwindigkeit.
 
-Die Reifenhuellen-Anregung wird vom Solver bevorzugt. Nur wenn diese Spalte
-fehlt, wird auf den Center-Raycast zurueckgegriffen. Der Exporter schreibt keine
-Keyframes und stellt den urspruenglichen Blender-Frame wieder her.
+| **Parameter und Standard** | **Verwendung** | **Größer** | **Kleiner** |
+| ------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Laengs-Spitzenfilter<br> Quer-Spitzenfilter<br> [Frames], jeweils 5 | Ersetzt auffällige Spitzen. | Längere Vergleichshistorie; kann echte schnelle Wechsel stärker unterdrücken. | Kürzere Historie; 1 deaktiviert diesen Filter. |
+| Spitzen-Schwelle<br> Quer-Spitzen-Schwelle<br> [m/s²], jeweils 0,5 | Bestimmt, welche Spitzen ersetzt werden. | Weniger Spitzen werden ersetzt; Reaktion bleibt direkter. | Mehr Spitzen werden ersetzt; echte Bremswechsel können schwächer werden. |
+| Laengs-Glaettungsfenster<br> Quer-Glaettungsfenster<br> [Frames], jeweils 5 | Glättet die Beschleunigung für den Solver. | Ruhigere, verzögerte und weichere Lasttransferreaktion. | Direkter, aber unruhiger; 1 deaktiviert die Glättung. |
+| Laengs-Totzone<br> Quer-Totzone<br> [m/s²], jeweils 0,10 | Ignoriert kleine Beschleunigungen. | Weniger kleine Wank-/Nickbewegungen; schwache Manöver können verschwinden. | Mehr kleine Reaktionen und mögliches Zittern. |
 
-## Solverparameter
+Fenster nur ungerade einstellen: 1, 3, 5 … 21. Schwelle 0 deaktiviert den Spitzenfilter nicht. Bei zu starkem Bremsnicken zuerst Schwerpunkt-Hoehe oder den Betrag von Laengs-Vorzeichen senken; bei zu starkem Rollen Rollen-Skalierung senken.
 
-Die Parameter werden bewusst in `vehicle_parameter.json` gespeichert und nicht
-mit den gemessenen Frame-Daten in `road_input.csv` vermischt.
+## 6 Fahrweg Fahrprofil und Kamera
 
-Wichtige Gruppen:
+### TestPfad bearbeiten
+1. Nur den TestPfad des gewünschten Fahrzeugs wählen. Objekt-Skalierung 1/1/1 beibehalten. In Objektmodus mit G verschieben oder um Global Z drehen; die Fahrzeughierarchie nicht gleichzeitig mittransformieren.
+2. Tab → Bearbeitungsmodus. G verschiebt Punkte, E verlängert den gewählten Endpunkt. Für zusätzliche Punkte ein Segment auswählen und Unterteilen verwenden.
+3. Für runde Kurven die betreffenden Bézier-Punkte wählen und Griffart auf Automatisch stellen. Bei engen Kreuzungen die Griffe kontrollieren, damit der Pfad auf der Straße bleibt.
 
-* Fahrzeugmasse und Verteilung auf gefederte/ungefederte Masse
-* Feder-, Daempfer- und Reifensteifigkeit
-* Ein- und Ausfederungsgrenzen
-* Laengs- und Querlastverlagerung
-* Schwerpunkt-Hoehe und Vorzeichenkonventionen
-* Roll-Skalierung
-* numerische Unterschritte pro Frame
+Fahrzeug_Pfadsteuerung_XX → PfadFolgen: Ziel = eigener TestPfad, Vorne-Achse Y, Oben-Achse Z, Kurve folgen und Feste Position ein, Kurvenradius aus, Einfluss 1. Vorausschau_Steuerung_XX muss denselben eigenen Pfad verwenden. Die Beschränkung kann beim Bearbeiten eingeschaltet bleiben.
 
-### Parameter fuer Lastverlagerung und Beschleunigungsfilter
+### Dauerhaft an die Fahrbahn anlegen
 
-* **Schwerpunkt-Hoehe [m]:** Dieser Wert beschreibt, wie hoch der Schwerpunkt
-  des Fahrzeugs ueber der Fahrbahn liegt. Ein groesserer Wert erzeugt
-  staerkeres Nicken und Rollen, ein kleinerer Wert macht die
-  Karosseriebewegung schwaecher.
+Am TestPfad unter dem Schraubenschlüssel Modifikator hinzufügen → Deformieren → Schrumpfen/Umhüllen wählen. Folgende Einstellungen bleiben aktiv:
 
-* **Laengs-Vorzeichen:** Dieser Wert bestimmt die Richtung der Nickbewegung beim
-  Beschleunigen und Bremsen. Wenn das Fahrzeug in die falsche Richtung nickt,
-  den Wert zwischen `1` und `-1` wechseln.
+| **Option** | **Einstellung** |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Methode / Einrastmodus | Projekt / Auf der Oberfläche |
+| Achse und Richtung | Nur Z; Negativ und Positiv aktivieren |
+| Ziel / Grenze / Versatz | Fahrbahn_Kollider / 0 m / 0 m |
+| Apply On Spline | Schaltfläche in der Titelleiste einschalten; Tooltip prüfen. Viewport und Bearbeitungsmodus anzeigen. |
 
-* **Quer-Vorzeichen:** Dieser Wert bestimmt die Richtung der Rollbewegung in
-  Kurven. Wenn sich die Karosserie zur falschen Seite neigt, den Wert zwischen
-  `1` und `-1` wechseln.
+Der Modifier bleibt erhalten; nicht Anwenden wählen. Er hält Kontrollpunkte auf der Kollisionsfläche. Bei starken Unebenheiten Punkte mit Unterteilen ergänzen: Bézier-Segmente können zwischen den Punkten trotzdem abweichen. Außerhalb der Kollisionsfläche ist keine Projektion möglich. Neue Fahrzeugkopien übernehmen diese Einstellungen; bestehende Kopien werden nicht nachträglich synchronisiert.
 
-* **Laengs-Spitzenfilter [Frames]:** Dieser Wert bestimmt, wie viele aktuelle
-  und vergangene Frames zum Erkennen kurzer unpassender Spruenge in der
-  Laengsbeschleunigung verglichen werden. Ein groesserer Wert entfernt eher
-  laengere Spruenge, kann aber echte schnelle Aenderungen staerker verzoegern;
-  `1` schaltet den Filter praktisch aus.
+### Gleichmäßig fahren und bis zum Stillstand bremsen
 
-* **Spitzen-Schwelle [m/s²]:** Dieser Wert bestimmt, wie stark die aktuelle
-  Laengsbeschleunigung von den vorherigen Werten abweichen darf, bevor sie
-  ersetzt wird. Ein kleinerer Wert filtert strenger, ein groesserer Wert
-  behaelt mehr Originaldaten.
+Versatzfaktor am PfadFolgen animieren. Gleichmäßige Fortschritte: Linear. Bremsen: zwei Schlüssel bei Bremsbeginn und Stopp setzen, dazwischen alte Schlüssel entfernen; den ersten im Graph Editor wählen, T → Quadratic, Strg + E → Ease Out. Am Stopp T → Konstant; spätere Schlüssel auf denselben Wert setzen.
 
-* **Laengs-Glaettungsfenster [Frames]:** Dieser Wert bestimmt, ueber wie viele
-  aktuelle und vergangene Werte ein Durchschnitt fuer die Nickbewegung gebildet
-  wird. Ein groesserer Wert macht die Bewegung ruhiger, aber langsamer; `1`
-  schaltet die Glaettung aus.
+Beispiel bei 24 fps: Frame 347 = 0,440; Frame 376 = 0,511. Die vorangehende lineare Fahrt muss etwa 0,004897 Fortschritt je Frame haben, damit am Bremsbeginn kein Geschwindigkeitssprung entsteht. Diese Interpolation bremst den Pfadfortschritt; den tatsächlichen Geschwindigkeitsverlauf bei Bedarf im CSV prüfen.
 
-* **Laengs-Totzone [m/s²]:** Dieser Wert legt fest, welche kleinen
-  Laengsbeschleunigungen als null behandelt werden. Ein groesserer Wert
-  unterdrueckt mehr leichtes Nicken, kann aber auch sanfte reale
-  Beschleunigungen entfernen.
+### Kamera folgt ohne mitzudrehen
 
-* **Quer-Spitzenfilter [Frames]:** Dieser Wert funktioniert wie der
-  Laengs-Spitzenfilter, jedoch fuer seitliche Beschleunigung und damit fuer das
-  Rollen. Ein groesserer Wert entfernt eher kurze seitliche Spruenge, kann aber
-  den Beginn echter Kurvenbewegungen verzoegern.
+Kamera wählen. Position kopieren hinzufügen: Ziel = Fahrzeug_Pfadsteuerung_XX, X/Y/Z ein, beide Räume World Space, Offset ein. Danach Position und feste Blickrichtung einstellen; Rotationsschlüssel entfernen und drehende/verfolgende Beschränkungen deaktivieren. Für feste Höhe Z ausschalten.
 
-* **Quer-Spitzen-Schwelle [m/s²]:** Dieser Wert bestimmt, wie stark die aktuelle
-  Querbeschleunigung von den vorherigen Werten abweichen darf. Ein kleinerer
-  Wert filtert strenger, ein groesserer Wert laesst mehr originale
-  Kurvenbewegung bestehen.
+Aktuelle Ansicht übernehmen: Maus in die 3D-Ansicht, Strg + Alt + Ziffernblock 0. Das richtet die aktive Kamera aus. Bei mehreren Kameras zuerst die gewünschte Kamera mit Strg + Ziffernblock 0 aktiv setzen.
 
-* **Quer-Glaettungsfenster [Frames]:** Dieser Wert bestimmt, ueber wie viele
-  aktuelle und vergangene Querwerte ein Durchschnitt gebildet wird. Ein
-  groesserer Wert macht das Rollen ruhiger, aber traeger; `1` schaltet die
-  Glaettung aus.
+## 7 Fahrzeugauswahl Ausgabe und kompletter Ablauf
 
-* **Quer-Totzone [m/s²]:** Dieser Wert legt fest, welche kleinen
-  Querbeschleunigungen als null behandelt werden. Ein groesserer Wert
-  verhindert leichtes Rollen auf gerader Strecke, kann aber sanfte
-  Kurvenbewegungen entfernen.
+| **Panel-Einstellung** | **Verwendung und Wirkung** |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Fahrzeug-Index<br> Standard 01 | Wählt das Fahrzeug und den Dateisuffix, z. B. 02. Kein Einfluss auf Bewegungsstärke. |
+| Gemeinsamen Pfad verwenden<br> Standard Aus | Nur bei Neuerstellung: Aus kopiert einen eigenen Pfad; Ein verwendet den Pfad von 01. |
+| Road Input CSV<br> //road_input.csv | Speicherort der Fahrbewegung und Straßenanregung. |
+| Vehicle Parameter JSON<br> //vehicle_parameter.json | Speicherort der exportierten Panelparameter. |
+| Vehicle Response CSV<br> //vehicle_response.csv | Speicherort der berechneten Bewegungen für den Baker. |
+| Ausgabedateien ueberschreiben<br> Standard Ein | Ein ersetzt vorhandene Ausgabedateien; Aus bricht bei vorhandenem Dateinamen ab. |
 
-* **Rollen-Skalierung:** Dieser Wert skaliert die fertig berechnete sichtbare
-  Seitenneigung der Karosserie. `1` zeigt die volle Rollbewegung, `0,5` die
-  Haelfte und `0` schaltet sie aus.
+Die drei Pfade bleiben ohne eigenen Index: Das Skript hängt _01, _02 usw. automatisch an. // verwendet den Ordner der gespeicherten .blend-Datei. Der Ausgabeordner muss existieren.
 
-Die Fenster werden weiterhin in Frames angegeben. Bei einer Aenderung der
-Framerate aendert sich deshalb auch ihre zeitliche Breite. Beispielsweise
-entsprechen fuenf Frames bei 25 FPS einer Zeitspanne von 0,20 s und bei 50 FPS
-einer Zeitspanne von 0,10 s.
+### Bedienung in der richtigen Reihenfolge
+1. Datei speichern, Start-/Endframe und fps festlegen. Skript ausführen und das Panel Road Input öffnen.
+2. Fahrzeug-Index 01 → Fahrzeug erstellen / bestätigen. Modell binden, Radachsen und Startpose kontrollieren.
+3. Für ein neues Fahrzeug Index 02/03 eingeben, Pfadoption wählen und Fahrzeug erstellen / bestätigen drücken. Die Vorlage ist immer 01; Steuerung, Mesh-Daten, Aktionen und eigener Pfad werden kopiert.
+4. Eigenes Modell einsetzen, nur dessen Pfad bearbeiten und Versatzfaktor animieren. Indexzuordnung von Lenkung und Vorausschau prüfen.
+5. Panelparameter für genau dieses Fahrzeug einstellen. Beim Wechsel des Index bleiben die bisherigen Panelwerte stehen; fahrzeugeigene Werte werden nicht automatisch geladen.
+6. Validate Setup ausführen, danach Run Complete Pipeline. Alternativ nacheinander 1. Validate + Export Inputs → 2. Solve vehicle_response.csv → 3. Bake Animation.
+7. Animation prüfen, .blend speichern. Für jedes weitere Fahrzeug Index und Parameter erneut einstellen und die Pipeline ausführen.
+8. Aktive Kamera und Render-Ausgabe wählen. Für Video FFmpeg Video mit MPEG-4/H.264 einstellen, dann Rendern → Animation rendern. PNG-Ausgabe erzeugt stattdessen Einzelbilder.
 
-### Filter fuer Laengs- und Querbeschleunigung
+### Nach Änderungen erneut ausführen
 
-Laengs- und Querbeschleunigung durchlaufen jeweils drei Stufen:
+Pfad, Timing, Modellgeometrie oder Panelparameter geändert: gesamte Pipeline erneut ausführen. Solve allein liest die gespeicherte JSON; Bake allein liest die gespeicherte Response-CSV. Beim erneuten Bake ersetzt der Code seine bisherigen Z- und Karosserie-Rotationsschlüssel.
 
-1. **Spitzenfilter:** Vergleich mit dem lokalen Median. Eine Abweichung oberhalb
-   der Schwelle wird durch den Median ersetzt.
-2. **Glaettung:** gleitender Mittelwert ueber das konfigurierte Framefenster.
-3. **Totzone:** kleine geglaettete Werte werden auf null gesetzt.
-
-Beide Fenster sind kausal. Fuer Frame `i` verwendet ein Fenster der Breite `5`
-nur die Frames `i-4` bis `i`; zukuenftige Frames werden nicht gelesen. Am Anfang
-der Animation wird das Fenster automatisch auf die bereits vorhandenen Frames
-verkuerzt. Dadurch beginnt die Filterwirkung nicht vor dem tatsaechlichen
-Eingangssignal, groessere Glaettungsfenster koennen die Reaktion jedoch
-verzoegern.
-
-`vehicle_response.csv` enthaelt fuer beide Beschleunigungsrichtungen Raw-,
-Despiked-, Smoothed- und Solver-Wert. Dadurch kann jede Stufe in Excel oder
-einem anderen CSV-Tool kontrolliert werden. Ein groesseres Fenster entfernt
-nicht automatisch nur mehr Spitzen: Fenster und Schwelle muessen gemeinsam
-passend zur Framerate gewaehlt werden.
-
-## Solver
-
-Pro Frame wird fuer jede Fahrzeugecke:
-
-1. die Strassenanregung gelesen,
-2. Reifen-, Feder- und Daempferkraft berechnet,
-3. die Lastverlagerung als zusaetzliche Kraft angesetzt,
-4. Beschleunigung, Geschwindigkeit und Weg in Unterschritten integriert,
-5. der Federweg auf die vorgegebenen Grenzen begrenzt.
-
-Aus den vier gefederten Massen werden danach Hub, Nicken und Rollen berechnet.
-Die Ergebnisse und Diagnosegroessen werden sicher ueber eine temporaere Datei
-in `vehicle_response.csv` geschrieben.
-
-## Baker
-
-Der Baker validiert zuerst die Pflichtspalten der `vehicle_response.csv`.
-Anschliessend entfernt er nur die zuvor vom Baker geschriebenen Keyframes der
-kontrollierten Achsen und schreibt:
-
-* Karosserie-Z, Nicken und Rollen auf `Karosserie_Steuerung`
-* vertikale Bewegung der vier Federungsobjekte
-
-Andere Achsen, vorhandene Driver und Animationen der untergeordneten
-Lenkungs-, Sturz- und Drehungsobjekte bleiben erhalten. Der beim Start aktive
-Frame wird nach dem Bake wiederhergestellt.
-
-## Erzeugte Dateien
-
-| Datei                    | Erzeuger    | Zweck                                                                        |
-| ------------------------ | ----------- | ---------------------------------------------------------------------------- |
-| `road_input.csv`         | Exporter    | Geometrie, Kinematik und Strassenanregung pro Frame; Pfad in der UI waehlbar |
-| `vehicle_parameter.json` | Exporter/UI | Solverparameter; Pfad in der UI waehlbar                                     |
-| `vehicle_response.csv`   | Solver      | Zustaende, Kraefte, Filterwerte und Bake-Groessen; Pfad in der UI waehlbar   |
-
-## Hinweise zur Diagnose
-
-* **Blend-Datei ist nicht gespeichert:** Projekt zuerst speichern.
-* **Objekt fehlt:** Namen exakt mit der Tabelle oben abgleichen.
-* **Kein Raycast-Treffer:** Kollidermesh, Position, Ray-Distanz und Radradius
-  pruefen.
-* **Falsche Nick- oder Rollrichtung:** Vorzeichenparameter an das tatsaechliche
-  Blender-Achsensystem anpassen und visuell validieren.
-* **Kurzer Nick- oder Rollimpuls:** In `vehicle_response.csv` Raw-, Despiked-,
-  Smoothed- und Solver-Werte vergleichen und erst danach Filterfenster oder
-  Schwelle anpassen.
-
-## Lizenz
-
-Vor einer externen Veroeffentlichung eine passende Lizenzdatei ergaenzen.
+Manuelle Basisänderungen an bereits gebackenen Kanälen: die betreffenden alten Kanäle zuerst löschen, dann den Startframe ausrichten. Vorhandene Schlüssel können die manuelle Pose beim Framewechsel sonst wieder überschreiben. Reines Kameraausrichten braucht keinen neuen Solverlauf.
